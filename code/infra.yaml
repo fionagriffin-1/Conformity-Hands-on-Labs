@@ -1,0 +1,489 @@
+# Description: Conformity labs
+# Contact: will@oznetnerd.com
+
+Parameters:
+  AwsUserArn:
+    Type: String
+
+  BaseBucketName:
+    Type: String
+
+  VpcCidr:
+    Type: String
+    Default: 10.1.0.0/16
+
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.1.0.0/24
+
+  RepoName:
+    Description: Code repo name & IaC CFN stack name
+    Type: String
+    Default: Conformity-S3-Bucket-IaC
+
+  AmazonLinux2AmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+Resources:
+  CloudFormationDeleteRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - cloudformation.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: "root"
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          - Action: cloudformation:DeleteStack
+            Effect: Allow
+            Resource: "*"
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: Conformity Lab
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: Conformity Lab
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref Vpc
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnetCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: Conformity Lab
+
+  NatGatewayEip:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEip.AllocationId
+      SubnetId: !Ref PublicSubnet
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: Name
+        Value: Conformity Lab
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmazonLinux2AmiId
+      InstanceType: t2.micro
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+      - Ref: Ec2InstanceSecurityGroup
+      Tags:
+      - Key: Name
+        Value: Conformity Lab
+
+  Ec2InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: Conformity-Lab-SG
+      GroupDescription: Allow SSH access
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: Name
+        Value: Conformity Lab
+
+  InsecureBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: PublicRead
+      BucketName: !Sub ${BaseBucketName}-insecure-bucket
+      Tags:
+      - Key: Name
+        Value: Conformity Lab
+
+  PipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${BaseBucketName}-artifact-bucket
+      AccessControl: "LogDeliveryWrite"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ConformityTemplateScannerPolicyDocument:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: Conformity-TemplateScannerPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: "Allow"
+            Action:
+            - "codecommit:CreateBranch"
+            - "codecommit:DeleteCommentContent"
+            - "codecommit:PutFile"
+            - "codecommit:CreateCommit"
+            - "codecommit:UpdatePullRequestTitle"
+            - "codecommit:UpdateComment"
+            - "codecommit:MergePullRequestByThreeWay"
+            - "codecommit:UpdatePullRequestStatus"
+            - "codecommit:CreatePullRequest"
+            - "codecommit:UpdateDefaultBranch"
+            - "codecommit:UpdatePullRequestApprovalState"
+            - "codecommit:UploadArchive"
+            - "codecommit:MergeBranchesBySquash"
+            - "codecommit:PostCommentForPullRequest"
+            - "codecommit:UpdatePullRequestDescription"
+            - "codecommit:GitPull"
+            - "codecommit:PostCommentReply"
+            - "codecommit:MergeBranchesByFastForward"
+            - "codecommit:CreateUnreferencedMergeCommit"
+            - "codecommit:MergePullRequestBySquash"
+            - "codecommit:MergeBranchesByThreeWay"
+            - "codecommit:MergePullRequestByFastForward"
+            - "codecommit:PostCommentForComparedCommit"
+            - "codecommit:DeleteFile"
+            - "codecommit:GitPush"
+            Resource: !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:Conformity-${!aws:username}-S3-Bucket-IaC
+          - Effect: "Allow"
+            Action:
+            - "codecommit:Get*"
+            - "codecommit:BatchDescribe*"
+            - "codecommit:List*"
+            - "codecommit:BatchGet*"
+            - "codecommit:Describe*"
+            - "codedeploy:List*"
+            - "codepipeline:Get*"
+            - "codebuild:BatchGet*"
+            - "codebuild:List*"
+            - "codedeploy:BatchGet*"
+            - "codepipeline:List*"
+            - "codebuild:Get*"
+            - "codebuild:Describe*"
+            - "codedeploy:Get*"
+            Resource: "*"
+          - Effect: "Allow"
+            Action: "logs:GetLogEvents"
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${!aws:username}ConformityTemplateScanner:log-stream:*
+          - Effect: "Allow"
+            Action: "codepipeline:RetryStageExecution"
+            Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:Conformity-${!aws:username}-Template-Scanner-Pipeline/*
+
+  ConformityCodeCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref RepoName
+      RepositoryDescription: Conformity pipeline scanner repo
+
+  ConformityCiCidPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: Conformity-Template-Scanner-Pipeline
+      ArtifactStore:
+        Type: S3
+        Location: !Sub ${BaseBucketName}-artifact-bucket
+      RoleArn:
+        Fn::GetAtt:
+        - ConformityCiCidPipelineRole
+        - Arn
+      Stages:
+      - Name: Source
+        Actions:
+        - Name: Source
+          ActionTypeId:
+            Category: Source
+            Owner: AWS
+            Version: '1'
+            Provider: CodeCommit
+          OutputArtifacts:
+          - Name: CfnTemplate
+          Configuration:
+            BranchName: master
+            PollForSourceChanges: 'false'
+            RepositoryName: !Ref RepoName
+          RunOrder: '1'
+      - Name: Build
+        Actions:
+        - Name: Build
+          ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Version: '1'
+            Provider: CodeBuild
+          Configuration:
+            ProjectName:
+              Ref: ConformityCodeBuildProject
+          InputArtifacts:
+          - Name: CfnTemplate
+          RunOrder: '1'
+      - Name: Deploy
+        Actions:
+        - Name: CreateStack
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: '1'
+          InputArtifacts:
+          - Name: CfnTemplate
+          Configuration:
+            ActionMode: CREATE_UPDATE
+            RoleArn:
+              Fn::GetAtt:
+              - ConformityCiCidPipelineRole
+              - Arn
+            StackName: !Ref RepoName
+            TemplatePath: CfnTemplate::cfn.yaml
+          RunOrder: '1'
+      Tags:
+      - Key: Name
+        Value: Conformity-Template-Scanner-Pipeline
+
+  ConformityCiCidPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codepipeline.amazonaws.com
+            - cloudformation.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: PipelinePermissions
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Action:
+            - codecommit:GetBranch
+            - codecommit:GetCommit
+            - codecommit:UploadArchive
+            - codecommit:GetUploadArchiveStatus
+            - codecommit:CancelUploadArchive
+            Resource: !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepoName}
+            Effect: Allow
+          - Action:
+            - s3:GetObject
+            - s3:GetObjectVersion
+            - s3:GetBucketVersioning
+            - s3:PutObject
+            Resource:
+            - !Sub arn:aws:s3:::${BaseBucketName}-artifact-bucket/*
+            Effect: Allow
+          - Action:
+            - codebuild:StartBuild
+            - codebuild:BatchGetBuilds
+            - iam:PassRole
+            Resource: "*"
+            Effect: Allow
+          - Action:
+            - cloudformation:CreateStack
+            - cloudformation:DescribeStack*
+            Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${RepoName}/*
+            Effect: Allow
+          - Resource: !Sub arn:aws:s3:::${BaseBucketName}-cfn-bucket
+            Effect: Allow
+            Action:
+            - s3:CreateBucket
+            - s3:PutBucketPolicy
+            - s3:PutBucketAcl
+            - s3:DeleteBucketPolicy
+            - s3:DeleteBucket
+            - s3:PutEncryptionConfiguration
+            - s3:PutBucketLogging
+            - s3:PutAccelerateConfiguration
+            - s3:PutBucketVersioning
+            - s3:PutBucketTagging
+            - s3:PutBucketPublicAccessBlock
+
+  ConformityCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Description: Conformity template scanner
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: 'true'
+        EnvironmentVariables:
+        - Name: CC_API_KEY
+          Value: Conformity-template-scanner-api-key
+          Type: SECRETS_MANAGER
+        - Name: CFN_TEMPLATE_FILE_LOCATION
+          Value: cfn.yaml
+        - Name: CC_REGION
+          Value: ap-southeast-2
+        - Name: CC_RISK_LEVEL
+          Value: MEDIUM
+      Name: ConformityTemplateScanner
+      ServiceRole:
+        Fn::GetAtt:
+        - ConformityCodeBuildServiceRole
+        - Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.1
+          phases:
+            install:
+              commands:
+                - wget https://raw.githubusercontent.com/OzNetNerd/Cloud-Conformity-Pipeline-Scanner/master/src/scanner.py
+            build:
+              commands:
+                - echo Running Conformity template scanner...
+                - python3 scanner.py
+
+  ConformityCodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: "/"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+            - events.amazonaws.com
+            - s3.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: ServiceRole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Resource: "*"
+            Effect: Allow
+            Action:
+            - logs:CreateLogStream
+            - s3:List*
+            - s3:Describe*
+            - s3:HeadBucket
+            - logs:CreateLogGroup
+            - logs:PutLogEvents
+          - Resource: !Sub arn:aws:s3:::${BaseBucketName}-artifact-bucket/*
+            Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:GetObjectVersion
+          - Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:Conformity-Template-Scanner-Pipeline
+            Effect: Allow
+            Action: codepipeline:StartPipelineExecution
+          - Resource: !Sub arn:aws:s3:::${BaseBucketName}-artifact-bucket/*
+            Effect: Allow
+            Action:
+            - s3:GetObject
+          - Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:Conformity-template-scanner-api-key*
+            Effect: Allow
+            Action:
+            - secretsmanager:GetSecretValue
+
+  ConformityCodeCommitEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ConformityPipelineTrigger
+      EventPattern:
+        source:
+        - aws.codecommit
+        detail-type:
+        - CodeCommit Repository State Change
+        resources:
+        - Fn::GetAtt:
+          - ConformityCodeCommitRepo
+          - Arn
+        detail:
+          event:
+          - referenceCreated
+          - referenceUpdated
+          referenceType:
+          - branch
+          referenceName:
+          - master
+      Targets:
+      - Arn: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:Conformity-Template-Scanner-Pipeline
+        RoleArn:
+          Fn::GetAtt:
+          - ConformityCodeBuildServiceRole
+          - Arn
+        Id: Conformity-Template-Scanner-Pipeline
+
+  Cloud9PolicyDocument:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: Conformity-Cloud9Policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - "cloud9:DescribeEnvironmentMemberships"
+            Resource: "*"
+
+  Cloud9Host:
+    Type: AWS::Cloud9::EnvironmentEC2
+    Properties:
+      Description: Conformity Workshop
+      InstanceType: t2.medium
+      Name: ConformityLab
+      OwnerArn: !Ref AwsUserArn
+      Repositories:
+          - RepositoryUrl: !Sub https://git-codecommit.${AWS::Region}.amazonaws.com/v1/repos/${RepoName}
+            PathComponent: !Sub codecommit/${RepoName}
+      SubnetId: !Ref PublicSubnet
